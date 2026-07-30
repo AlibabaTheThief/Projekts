@@ -116,6 +116,30 @@ def clean(in_path, out_path, tol=0.1, sagitta=0.05, mode="poly"):
     return stats
 
 
+def _iter_bulge_segments(msp):
+    """Yield (p1, p2, bulge) for every curved segment in POLYLINE and
+    LWPOLYLINE entities, regardless of DXF vintage."""
+    for e in msp:
+        t = e.dxftype()
+        if t == "POLYLINE":
+            verts = list(e.vertices)
+            pts = [(v.dxf.location.x, v.dxf.location.y) for v in verts]
+            bulges = [getattr(v.dxf, "bulge", 0) or 0 for v in verts]
+            closed = e.is_closed
+        elif t == "LWPOLYLINE":
+            raw = list(e.get_points("xyb"))
+            pts = [(p[0], p[1]) for p in raw]
+            bulges = [p[2] for p in raw]
+            closed = e.closed
+        else:
+            continue
+        n = len(pts)
+        rng = range(n) if closed else range(n - 1)
+        for i in rng:
+            if bulges[i]:
+                yield pts[i], pts[(i + 1) % n], bulges[i]
+
+
 def audit_far_centers(dxf_path, sheet=(0, 0, 1500, 900), margin=100):
     """Count reconstructed arc centers that land outside the sheet."""
     doc = ezdxf.readfile(dxf_path)
@@ -123,32 +147,21 @@ def audit_far_centers(dxf_path, sheet=(0, 0, 1500, 900), margin=100):
     minx, miny, maxx, maxy = sheet
     far = 0
     worst = 0.0
-    for e in msp:
-        if e.dxftype() != "POLYLINE":
+    for p1, p2, b in _iter_bulge_segments(msp):
+        chord = math.dist(p1, p2)
+        if chord == 0:
             continue
-        verts = list(e.vertices)
-        pts = [(v.dxf.location.x, v.dxf.location.y) for v in verts]
-        n = len(pts)
-        rng = range(n) if e.is_closed else range(n - 1)
-        for i in rng:
-            b = getattr(verts[i].dxf, "bulge", 0) or 0
-            if b == 0:
-                continue
-            p1, p2 = pts[i], pts[(i + 1) % n]
-            chord = math.dist(p1, p2)
-            if chord == 0:
-                continue
-            r = chord * (1 + b * b) / (4 * abs(b))
-            worst = max(worst, r)
-            mx, my = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
-            dx, dy = p2[0] - p1[0], p2[1] - p1[1]
-            d = math.hypot(dx, dy)
-            a = math.sqrt(max(r * r - (chord / 2) ** 2, 0))
-            ux, uy = -dy / d, dx / d
-            s = 1 if b > 0 else -1
-            cx, cy = mx - s * ux * a, my - s * uy * a
-            if cx < minx - margin or cx > maxx + margin or cy < miny - margin or cy > maxy + margin:
-                far += 1
+        r = chord * (1 + b * b) / (4 * abs(b))
+        worst = max(worst, r)
+        mx, my = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+        dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+        d = math.hypot(dx, dy)
+        a = math.sqrt(max(r * r - (chord / 2) ** 2, 0))
+        ux, uy = -dy / d, dx / d
+        s = 1 if b > 0 else -1
+        cx, cy = mx - s * ux * a, my - s * uy * a
+        if cx < minx - margin or cx > maxx + margin or cy < miny - margin or cy > maxy + margin:
+            far += 1
     return far, worst
 
 
